@@ -1,0 +1,10 @@
+[Unit]
+Description=Download Spotify liked songs with spotDL
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/spotify-song-server
+ExecStart=/opt/spotify-song-server/scripts/run_spotdl_downloads.sh
+

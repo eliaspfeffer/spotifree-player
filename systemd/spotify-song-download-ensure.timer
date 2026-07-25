@@ -1,0 +1,11 @@
+[Unit]
+Description=Check Spotify song download progress every 15 minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=15min
+Unit=spotify-song-download-ensure.service
+
+[Install]
+WantedBy=timers.target
+

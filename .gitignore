@@ -1,0 +1,18 @@
+__pycache__/
+*.py[cod]
+.DS_Store
+
+# Local test output and browser profiles
+build/
+
+# Runtime data and credentials
+.env
+*.env
+cookies/
+data/
+friends/
+inputs/
+logs/
+music/
+state/
+venv/

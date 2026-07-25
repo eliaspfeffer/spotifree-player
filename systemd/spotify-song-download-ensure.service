@@ -1,0 +1,7 @@
+[Unit]
+Description=Ensure Spotify song download keeps running until complete
+
+[Service]
+Type=oneshot
+ExecStart=/opt/spotify-song-server/scripts/ensure_download_running.sh
+

@@ -92,6 +92,9 @@ class MusicServer(BaseHTTPRequestHandler):
         if parsed.path == "/api/codex/history":
             self.codex_history()
             return
+        if parsed.path == "/api/recommendations":
+            self.music_recommendations(params)
+            return
         if parsed.path.startswith("/cover/"):
             self.serve_cover(parsed.path.removeprefix("/cover/"))
             return
@@ -179,6 +182,22 @@ class MusicServer(BaseHTTPRequestHandler):
 
     def codex_history(self) -> None:
         self.send_json({"messages": self.server.load_chat_history(), "configured": self.server.codex_configured()})
+
+    def music_recommendations(self, params: dict[str, list[str]]) -> None:
+        source = params.get("source", [""])[0].strip()
+        if not source.startswith("/files/"):
+            self.send_json({"error": "Ungültiger Song."}, HTTPStatus.BAD_REQUEST)
+            return
+        path = self.resolve_music_path(source.removeprefix("/files/"))
+        if path is None:
+            self.send_json({"error": "Der Song wurde nicht gefunden."}, HTTPStatus.NOT_FOUND)
+            return
+        try:
+            suggestions = self.server.recommendations_for(path, self.music_files())
+        except RuntimeError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_GATEWAY)
+            return
+        self.send_json({"suggestions": suggestions, "source": source})
 
     def codex_chat(self, params: dict[str, list[str]]) -> None:
         message = params.get("message", [""])[0].strip()
@@ -315,7 +334,7 @@ class MusicServer(BaseHTTPRequestHandler):
         artist = params.get("artist", [""])[0].strip()
         sort = params.get("sort", ["title"])[0].strip() or "title"
         active_view = params.get("view", ["player"])[0].strip()
-        if active_view not in {"player", "playlist", "friends"}:
+        if active_view not in {"player", "playlist", "friends", "discover"}:
             active_view = "player"
         selected_friend = params.get("friend", [self.cookie_value("friend_library")])[0].strip()
         all_files = self.music_files()
@@ -904,7 +923,7 @@ class MusicServer(BaseHTTPRequestHandler):
       top: auto;
       z-index: 5;
       width: fit-content;
-      grid-template-columns: repeat(3, auto);
+      grid-template-columns: repeat(4, auto);
       align-self: center;
       gap: 3px;
       margin: 0;
@@ -1287,6 +1306,109 @@ class MusicServer(BaseHTTPRequestHandler):
       font-weight: 800;
     }}
     .friend-pending {{ color: var(--muted); font-size: .72rem; white-space: nowrap; }}
+    [data-panel="discover"] {{ padding: 22px 0 110px; }}
+    .discover-header {{
+      display: flex;
+      justify-content: space-between;
+      gap: 24px;
+      align-items: end;
+      padding-bottom: 16px;
+      border-bottom: 1px solid var(--line);
+    }}
+    .discover-header h2 {{ margin: 0; font-size: clamp(1.55rem, 3vw, 2.35rem); }}
+    .discover-header p {{ max-width: 560px; margin: 7px 0 0; color: var(--muted); }}
+    .recommendation-status {{ color: var(--muted); font-size: .78rem; white-space: nowrap; }}
+    .recommendation-status.loading {{ color: var(--accent); }}
+    .youtube-stage {{
+      display: grid;
+      grid-template-columns: minmax(320px, .95fr) minmax(0, 1.05fr);
+      gap: 28px;
+      align-items: center;
+      margin: 20px 0;
+      padding-bottom: 20px;
+      border-bottom: 1px solid var(--line);
+    }}
+    .youtube-stage[hidden] {{ display: none; }}
+    .youtube-frame {{
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      min-height: 200px;
+      overflow: hidden;
+      border-radius: 8px;
+      background: #000;
+    }}
+    .youtube-frame iframe {{ width: 100%; height: 100%; display: block; }}
+    .youtube-now-kicker {{ color: #ff5d5d; font-size: .68rem; font-weight: 850; text-transform: uppercase; }}
+    .youtube-now h3 {{ margin: 7px 0 4px; font-size: clamp(1.3rem, 2.5vw, 2rem); }}
+    .youtube-now p {{ margin: 0; color: var(--muted); }}
+    .youtube-open {{
+      display: inline-block;
+      margin-top: 16px;
+      color: var(--accent);
+      font-size: .82rem;
+      font-weight: 780;
+      text-decoration: none;
+    }}
+    .recommendation-grid {{
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+      padding-top: 18px;
+    }}
+    .recommendation-card {{
+      min-width: 0;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+      transition: border-color .18s ease, transform .18s ease;
+    }}
+    .recommendation-card:hover {{ border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); transform: translateY(-2px); }}
+    .recommendation-thumb {{
+      position: relative;
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      overflow: hidden;
+      background: var(--surface-2);
+    }}
+    .recommendation-thumb img {{ width: 100%; height: 100%; display: block; object-fit: cover; }}
+    .recommendation-thumb button {{
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      margin: 0;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      color: transparent;
+    }}
+    .recommendation-thumb button::after {{
+      content: "▶";
+      position: absolute;
+      right: 10px;
+      bottom: 10px;
+      width: 38px;
+      height: 38px;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      background: var(--accent);
+      color: #07120d;
+      box-shadow: 0 8px 22px rgba(0,0,0,.35);
+    }}
+    .recommendation-copy {{ padding: 11px 12px 13px; }}
+    .recommendation-title {{ white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 780; }}
+    .recommendation-meta {{ margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted); font-size: .76rem; }}
+    .tab-notice {{
+      display: inline-block;
+      width: 6px;
+      height: 6px;
+      margin-left: 5px;
+      border-radius: 50%;
+      background: var(--accent);
+      vertical-align: middle;
+    }}
+    .tab-notice[hidden] {{ display: none; }}
     .codex-toggle {{
       min-width: 0;
       padding: 10px 14px;
@@ -1306,7 +1428,7 @@ class MusicServer(BaseHTTPRequestHandler):
       }}
       body[data-active-tab="player"] main {{ padding-bottom: max(8px, env(safe-area-inset-bottom)); }}
       .brand-subtitle {{ display: none; }}
-      .tabs {{ width: 100%; grid-template-columns: repeat(3, 1fr); }}
+      .tabs {{ width: 100%; grid-template-columns: repeat(4, 1fr); }}
       .tab {{ min-width: 0; width: 100%; padding: 6px 8px; }}
       .player-card {{
         grid-template-columns: 1fr;
@@ -1362,6 +1484,12 @@ class MusicServer(BaseHTTPRequestHandler):
       .friend-track {{ grid-template-columns: 44px minmax(0, 1fr) auto; gap: 10px; }}
       .friend-track .track-cover, .friend-cover-fallback {{ width: 44px; height: 44px; }}
       .friend-track .chips {{ display: none; }}
+      [data-panel="discover"] {{ padding-top: 14px; }}
+      .discover-header {{ display: block; }}
+      .recommendation-status {{ display: block; margin-top: 8px; white-space: normal; }}
+      .youtube-stage {{ grid-template-columns: 1fr; gap: 14px; }}
+      .recommendation-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }}
+      .recommendation-copy {{ padding: 9px 10px 11px; }}
       .mini-player {{ grid-template-columns: 42px minmax(0, 1fr) auto auto; }}
       .mini-cover-shell {{ width: 42px; height: 42px; }}
       .codex-chat {{ bottom: max(64px, calc(8px + env(safe-area-inset-bottom))); }}
@@ -1398,6 +1526,7 @@ class MusicServer(BaseHTTPRequestHandler):
       <button class="{tab_class("player")}" type="button" data-tab="player">Player</button>
       <button class="{tab_class("playlist")}" type="button" data-tab="playlist">Playlist</button>
       <button class="{tab_class("friends")}" type="button" data-tab="friends">Freunde</button>
+      <button class="{tab_class("discover")}" type="button" data-tab="discover">Neu<span class="tab-notice" id="recommendation-notice" hidden></span></button>
     </nav>
     <section class="{panel_class("player")}" data-panel="player">
       <div class="player-card">
@@ -1456,6 +1585,26 @@ class MusicServer(BaseHTTPRequestHandler):
     <section class="{panel_class("friends")}" data-panel="friends">
       {friends_rows}
     </section>
+    <section class="{panel_class("discover")}" data-panel="discover">
+      <header class="discover-header">
+        <div>
+          <div class="friend-kicker">Für dich entdeckt</div>
+          <h2>Neue Musik</h2>
+          <p>YouTube-Mix-Vorschläge passend zum gehörten Song, ohne deine Library automatisch zu verändern.</p>
+        </div>
+        <span class="recommendation-status" id="recommendation-status">Höre einen Song, um Vorschläge zu laden.</span>
+      </header>
+      <div class="youtube-stage" id="youtube-stage" hidden>
+        <div class="youtube-frame"><div id="youtube-player"></div></div>
+        <div class="youtube-now">
+          <div class="youtube-now-kicker">YouTube</div>
+          <h3 id="youtube-title">Vorschlag</h3>
+          <p id="youtube-artist">YouTube Music</p>
+          <a class="youtube-open" id="youtube-open" href="https://www.youtube.com/" target="_blank" rel="noopener noreferrer">Auf YouTube öffnen ↗</a>
+        </div>
+      </div>
+      <div class="recommendation-grid" id="recommendation-grid"></div>
+    </section>
   </main>
   <div class="mini-player" id="mini-player">
     <div class="mini-cover-shell">
@@ -1503,6 +1652,13 @@ class MusicServer(BaseHTTPRequestHandler):
       let crossfadeSeconds = 0;
       let queue = tracks.map((_, index) => index);
       let queueScope = [...queue];
+      let recommendationRequestedFor = "";
+      let recommendationLoading = false;
+      let youtubeApiPromise = null;
+      let youtubePlayer = null;
+      let youtubeActive = false;
+      let youtubeSuggestion = null;
+      let recommendationItems = [];
       const inlineAudios = Array.from(document.querySelectorAll("[data-inline-audio]"));
       const els = {{
         title: document.getElementById("player-title"),
@@ -1526,6 +1682,13 @@ class MusicServer(BaseHTTPRequestHandler):
         volumeValue: document.getElementById("volume-value"),
         crossfade: document.getElementById("crossfade"),
         download: document.getElementById("player-download"),
+        recommendationNotice: document.getElementById("recommendation-notice"),
+        recommendationStatus: document.getElementById("recommendation-status"),
+        recommendationGrid: document.getElementById("recommendation-grid"),
+        youtubeStage: document.getElementById("youtube-stage"),
+        youtubeTitle: document.getElementById("youtube-title"),
+        youtubeArtist: document.getElementById("youtube-artist"),
+        youtubeOpen: document.getElementById("youtube-open"),
       }};
       const chat = {{
         panel: document.getElementById("codex-chat"),
@@ -1635,6 +1798,7 @@ class MusicServer(BaseHTTPRequestHandler):
 
       function setTab(name) {{
         document.body.dataset.activeTab = name;
+        if (name === "discover") els.recommendationNotice.hidden = true;
         document.querySelectorAll(".tab").forEach((tab) => {{
           tab.classList.toggle("active", tab.dataset.tab === name);
         }});
@@ -1661,6 +1825,7 @@ class MusicServer(BaseHTTPRequestHandler):
         userVolume = Math.max(0, Math.min(1, value));
         if (!transitioning) audioDecks.forEach((deck) => {{ deck.volume = userVolume; }});
         inlineAudios.forEach((element) => {{ element.volume = userVolume; }});
+        if (youtubePlayer?.setVolume) youtubePlayer.setVolume(Math.round(userVolume * 100));
         els.volume.value = String(Math.round(userVolume * 100));
         els.volumeValue.textContent = Math.round(userVolume * 100) + "%";
         if (persist) persistPlayerSettings();
@@ -1683,6 +1848,19 @@ class MusicServer(BaseHTTPRequestHandler):
         return index >= 0 ? index : 0;
       }}
 
+      function chooseInitialTrack() {{
+        if (!tracks.length) return -1;
+        let lastTrackSource = "";
+        try {{
+          lastTrackSource = window.sessionStorage.getItem("player-last-track-source") || "";
+        }} catch (_) {{}}
+        const candidates = tracks
+          .map((track, index) => (track.src === lastTrackSource ? -1 : index))
+          .filter((index) => index >= 0);
+        const pool = candidates.length ? candidates : tracks.map((_, index) => index);
+        return pool[Math.floor(Math.random() * pool.length)];
+      }}
+
       function renderTrack() {{
         const track = tracks[current];
         if (!track) return;
@@ -1701,6 +1879,12 @@ class MusicServer(BaseHTTPRequestHandler):
         document.querySelectorAll("[data-track-index]").forEach((row) => {{
           row.classList.toggle("current", Number(row.dataset.trackIndex) === current);
         }});
+      }}
+
+      function stopYoutubeForLocal() {{
+        if (youtubePlayer?.pauseVideo) youtubePlayer.pauseVideo();
+        youtubeActive = false;
+        youtubeSuggestion = null;
       }}
 
       function loadTrack(index, autoplay = false, overlap = false) {{
@@ -1724,6 +1908,10 @@ class MusicServer(BaseHTTPRequestHandler):
         current = nextTrackIndex;
         audio = incoming;
         const track = tracks[current];
+        if (autoplay) stopYoutubeForLocal();
+        try {{
+          window.sessionStorage.setItem("player-last-track-source", track.src);
+        }} catch (_) {{}}
         if (incoming.src !== new URL(track.src, window.location.href).href) {{
           incoming.src = track.src;
         }}
@@ -1767,9 +1955,17 @@ class MusicServer(BaseHTTPRequestHandler):
       }}
 
       function togglePlay() {{
+        if (youtubeActive && document.body.dataset.activeTab === "discover" && youtubePlayer) {{
+          const state = youtubePlayer.getPlayerState();
+          if (state === 1) youtubePlayer.pauseVideo();
+          else youtubePlayer.playVideo();
+          return;
+        }}
         if (!tracks.length) return;
         if (current < 0) loadTrack(0);
         if (audio.paused) {{
+          stopYoutubeForLocal();
+          renderTrack();
           audio.play().catch(() => {{}});
         }} else {{
           window.cancelAnimationFrame(fadeFrame);
@@ -1807,11 +2003,29 @@ class MusicServer(BaseHTTPRequestHandler):
       }}
 
       function next(forceAutoplay = null, overlap = true) {{
+        if (
+          document.body.dataset.activeTab === "discover" &&
+          youtubeSuggestion &&
+          recommendationItems.length
+        ) {{
+          const index = recommendationItems.findIndex((item) => item.id === youtubeSuggestion.id);
+          playRecommendation(recommendationItems[(index + 1) % recommendationItems.length]);
+          return;
+        }}
         const position = shuffleEnabled ? chooseShuffleNext() : queueIndexFor(current) + 1;
         loadTrack(position, forceAutoplay === null ? !audio.paused : forceAutoplay, overlap);
       }}
 
       function prev() {{
+        if (
+          document.body.dataset.activeTab === "discover" &&
+          youtubeSuggestion &&
+          recommendationItems.length
+        ) {{
+          const index = recommendationItems.findIndex((item) => item.id === youtubeSuggestion.id);
+          playRecommendation(recommendationItems[(index - 1 + recommendationItems.length) % recommendationItems.length]);
+          return;
+        }}
         if (audio.currentTime > 4) {{
           audio.currentTime = 0;
           return;
@@ -1845,6 +2059,141 @@ class MusicServer(BaseHTTPRequestHandler):
         setQueue(nextQueue);
         loadTrack(0, true);
         setTab("player");
+      }}
+
+      function youtubeApi() {{
+        if (window.YT?.Player) return Promise.resolve(window.YT);
+        if (youtubeApiPromise) return youtubeApiPromise;
+        youtubeApiPromise = new Promise((resolve) => {{
+          const previous = window.onYouTubeIframeAPIReady;
+          window.onYouTubeIframeAPIReady = () => {{
+            if (typeof previous === "function") previous();
+            resolve(window.YT);
+          }};
+          const script = document.createElement("script");
+          script.src = "https://www.youtube.com/iframe_api";
+          script.async = true;
+          document.head.append(script);
+        }});
+        return youtubeApiPromise;
+      }}
+
+      function updateYoutubeMiniPlayer(playing) {{
+        if (!youtubeSuggestion) return;
+        els.miniTitle.textContent = youtubeSuggestion.title;
+        els.miniArtist.textContent = youtubeSuggestion.artist || "YouTube Music";
+        els.miniCoverFallback.textContent = "YT";
+        els.miniCover.classList.remove("loaded");
+        els.miniCover.src = youtubeSuggestion.thumbnail;
+        const text = playing ? "Ⅱ" : "▶";
+        els.play.textContent = text;
+        els.miniPlay.textContent = text;
+      }}
+
+      async function playRecommendation(suggestion) {{
+        window.cancelAnimationFrame(fadeFrame);
+        transitioning = false;
+        audioDecks.forEach((deck) => {{
+          deck.pause();
+          deck.volume = userVolume;
+        }});
+        youtubeActive = true;
+        youtubeSuggestion = suggestion;
+        els.youtubeStage.hidden = false;
+        els.youtubeTitle.textContent = suggestion.title;
+        els.youtubeArtist.textContent = suggestion.artist || "YouTube Music";
+        els.youtubeOpen.href = suggestion.url;
+        els.recommendationStatus.textContent = "YouTube-Vorschlag ausgewählt";
+        updateYoutubeMiniPlayer(false);
+        const YTApi = await youtubeApi();
+        if (youtubePlayer?.loadVideoById) {{
+          youtubePlayer.setVolume(Math.round(userVolume * 100));
+          youtubePlayer.loadVideoById(suggestion.id);
+          return;
+        }}
+        youtubePlayer = new YTApi.Player("youtube-player", {{
+          videoId: suggestion.id,
+          playerVars: {{ autoplay: 1, controls: 1, playsinline: 1, rel: 0 }},
+          events: {{
+            onReady: (event) => {{
+              event.target.setVolume(Math.round(userVolume * 100));
+              event.target.playVideo();
+            }},
+            onStateChange: (event) => {{
+              if (event.data === YTApi.PlayerState.PLAYING) {{
+                audioDecks.forEach((deck) => deck.pause());
+                youtubeActive = true;
+                updateYoutubeMiniPlayer(true);
+              }} else if (
+                event.data === YTApi.PlayerState.PAUSED ||
+                event.data === YTApi.PlayerState.ENDED
+              ) {{
+                updateYoutubeMiniPlayer(false);
+              }}
+            }},
+            onError: (event) => {{
+              youtubeActive = false;
+              els.youtubeStage.dataset.error = String(event.data || "");
+              els.recommendationStatus.textContent = "Einbettung gesperrt. Wähle einen anderen Vorschlag oder öffne YouTube.";
+              updateButtons();
+            }},
+          }},
+        }});
+      }}
+
+      function renderRecommendations(suggestions) {{
+        recommendationItems = suggestions;
+        els.recommendationGrid.replaceChildren();
+        suggestions.forEach((suggestion) => {{
+          const card = document.createElement("article");
+          card.className = "recommendation-card";
+          const thumb = document.createElement("div");
+          thumb.className = "recommendation-thumb";
+          const image = document.createElement("img");
+          image.src = suggestion.thumbnail;
+          image.alt = "";
+          image.loading = "lazy";
+          const play = document.createElement("button");
+          play.type = "button";
+          play.ariaLabel = suggestion.title + " auf YouTube abspielen";
+          play.addEventListener("click", () => playRecommendation(suggestion));
+          thumb.append(image, play);
+          const copy = document.createElement("div");
+          copy.className = "recommendation-copy";
+          const title = document.createElement("div");
+          title.className = "recommendation-title";
+          title.textContent = suggestion.title;
+          const meta = document.createElement("div");
+          meta.className = "recommendation-meta";
+          meta.textContent = [suggestion.artist, suggestion.duration].filter(Boolean).join(" · ");
+          copy.append(title, meta);
+          card.append(thumb, copy);
+          els.recommendationGrid.append(card);
+        }});
+      }}
+
+      async function loadRecommendations() {{
+        const track = tracks[current];
+        if (!track || recommendationLoading || recommendationRequestedFor === track.src) return;
+        recommendationRequestedFor = track.src;
+        recommendationLoading = true;
+        els.recommendationStatus.classList.add("loading");
+        els.recommendationStatus.textContent = "YouTube Music wird durchsucht …";
+        try {{
+          const response = await fetch("/api/recommendations?" + new URLSearchParams({{ source: track.src }}), {{
+            cache: "no-store",
+          }});
+          const payload = await response.json();
+          if (!response.ok) throw new Error(payload.error || "Vorschläge konnten nicht geladen werden.");
+          renderRecommendations(payload.suggestions || []);
+          els.recommendationStatus.textContent = (payload.suggestions || []).length + " neue Vorschläge";
+          if (document.body.dataset.activeTab !== "discover") els.recommendationNotice.hidden = false;
+        }} catch (error) {{
+          els.recommendationStatus.textContent = error.message;
+        }} finally {{
+          recommendationLoading = false;
+          els.recommendationStatus.classList.remove("loading");
+        }}
       }}
 
       document.querySelectorAll(".tab").forEach((tab) => {{
@@ -1913,6 +2262,8 @@ class MusicServer(BaseHTTPRequestHandler):
       audioDecks.forEach((deck) => {{
         deck.addEventListener("play", () => {{
           if (deck === audio) {{
+            if (youtubePlayer?.pauseVideo) youtubePlayer.pauseVideo();
+            youtubeActive = false;
             updateButtons();
             pauseInlineAudios();
           }}
@@ -1944,6 +2295,9 @@ class MusicServer(BaseHTTPRequestHandler):
           ) {{
             next(true, true);
           }}
+          if (!deck.paused && deck.currentTime >= 35 && recommendationRequestedFor !== tracks[current]?.src) {{
+            loadRecommendations();
+          }}
         }});
       }});
 
@@ -1954,7 +2308,7 @@ class MusicServer(BaseHTTPRequestHandler):
       document.addEventListener("touchend", (event) => {{
         const delta = event.changedTouches[0].clientX - touchStart;
         if (Math.abs(delta) < 70) return;
-        const order = ["player", "playlist", "friends"];
+        const order = ["player", "playlist", "friends", "discover"];
         const active = document.querySelector(".tab.active")?.dataset.tab || "player";
         const index = order.indexOf(active);
         if (delta < 0 && index < order.length - 1) setTab(order[index + 1]);
@@ -1970,12 +2324,13 @@ class MusicServer(BaseHTTPRequestHandler):
       }} catch (_) {{}}
       applyVolume(userVolume, false);
       els.crossfade.value = String(crossfadeSeconds);
+      current = chooseInitialTrack();
       els.shuffle.setAttribute("aria-pressed", String(shuffleEnabled));
       if (shuffleEnabled) {{
         shufflePlayed = new Set(current >= 0 ? [current] : []);
         queue = current >= 0 ? [current] : [];
       }}
-      if (tracks.length) loadTrack(0, false);
+      if (tracks.length) loadTrack(queueIndexFor(current), false);
       updateButtons();
       loadChatHistory();
     }})();
@@ -2473,6 +2828,11 @@ class Server(ThreadingHTTPServer):
         self.music_root.mkdir(parents=True, exist_ok=True)
         self.cover_cache = Path(env("COVER_CACHE", "/opt/spotify-song-server/cache/covers"))
         self.cover_cache.mkdir(parents=True, exist_ok=True)
+        self.recommendation_cache = Path(env(
+            "RECOMMENDATION_CACHE",
+            "/opt/spotify-song-server/cache/recommendations",
+        ))
+        self.recommendation_cache.mkdir(parents=True, exist_ok=True)
         self.auth_user = env("BASIC_AUTH_USER", "")
         self.auth_password = env("BASIC_AUTH_PASSWORD", "")
         self.metadata_csv = Path(env("METADATA_CSV", "/opt/spotify-song-server/data/Liked_Songs.csv"))
@@ -2493,7 +2853,9 @@ class Server(ThreadingHTTPServer):
         self.codex_backup_dir.mkdir(parents=True, exist_ok=True)
         self.codex_lock = threading.Lock()
         self.library_lock = threading.Lock()
+        self.recommendation_lock = threading.Lock()
         self.codex_bin = env("CODEX_BIN", "codex")
+        self.ytdlp_bin = env("YTDLP_BIN", str(self.base_dir / "venv/bin/yt-dlp"))
         self.codex_cli_model = env("CODEX_CLI_MODEL", "")
         self.codex_ready = self.check_codex_cli()
         self.spotify_client_id = env("SPOTIFY_CLIENT_ID", "")
@@ -2737,6 +3099,156 @@ class Server(ThreadingHTTPServer):
             "added_at": "",
             "duration": "",
         }
+
+    def recommendations_for(self, path: Path, music_files: list[Path]) -> list[dict[str, object]]:
+        if not Path(self.ytdlp_bin).is_file():
+            raise RuntimeError("Die YouTube-Suche ist auf dem Server nicht verfügbar.")
+        meta = self.metadata_for(path)
+        title = str(meta.get("title") or path.stem).strip()
+        artist = str(meta.get("artist_display") or "").strip()
+        if not artist and " - " in path.stem:
+            artist = path.stem.split(" - ", 1)[0].strip()
+        if not title:
+            raise RuntimeError("Für diesen Song fehlen Suchinformationen.")
+
+        newest_mtime = max((item.stat().st_mtime_ns for item in music_files), default=0)
+        fingerprint = f"{normalize_key(artist)}:{normalize_key(title)}:{len(music_files)}:{newest_mtime}"
+        cache_path = self.recommendation_cache / f"{hashlib.sha256(fingerprint.encode()).hexdigest()}.json"
+        with self.recommendation_lock:
+            if cache_path.exists() and time.time() - cache_path.stat().st_mtime < 7 * 86400:
+                try:
+                    cached = json.loads(cache_path.read_text(encoding="utf-8"))
+                    if isinstance(cached, list):
+                        return cached
+                except (OSError, json.JSONDecodeError):
+                    pass
+
+            search_query = " ".join(part for part in [artist, title] if part)
+            search_url = "https://music.youtube.com/search?" + urlencode({"q": search_query}) + "#songs"
+            search = self.run_ytdlp_json(search_url, 12)
+            search_entries = [
+                item for item in search.get("entries", [])
+                if isinstance(item, dict) and re.fullmatch(r"[A-Za-z0-9_-]{11}", str(item.get("id") or ""))
+            ]
+            if not search_entries:
+                raise RuntimeError("YouTube Music hat keinen passenden Ausgangssong gefunden.")
+            title_key = normalize_key(title)
+            seed = next(
+                (
+                    item for item in search_entries
+                    if title_key and title_key in normalize_key(str(item.get("title") or ""))
+                ),
+                search_entries[0],
+            )
+            seed_id = str(seed["id"])
+            mix_url = f"https://www.youtube.com/watch?v={seed_id}&list=RD{seed_id}"
+            mix = self.run_ytdlp_json(mix_url, 35)
+
+            known_titles = {
+                normalize_key(str(self.metadata_for(item).get("title") or item.stem))
+                for item in music_files
+            }
+            known_stems = {normalize_key(item.stem) for item in music_files}
+            blocked_terms = {
+                "podcast", "interview", "reaction", "review", "tutorial", "documentary",
+                "gameplay", "trailer", "news", "recap", "audiobook", "full movie",
+                "behind the scenes", "making of", "live stream",
+            }
+            suggestions: list[dict[str, object]] = []
+            seen_ids: set[str] = set()
+            for item in mix.get("entries", []):
+                if not isinstance(item, dict):
+                    continue
+                video_id = str(item.get("id") or "")
+                video_title = str(item.get("title") or "").strip()
+                channel = str(item.get("channel") or item.get("uploader") or "YouTube Music").strip()
+                duration = item.get("duration")
+                if (
+                    video_id == seed_id
+                    or video_id in seen_ids
+                    or not re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id)
+                    or not video_title
+                    or not isinstance(duration, (int, float))
+                    or duration < 60
+                    or duration > 900
+                    or str(item.get("live_status") or "") in {"is_live", "is_upcoming"}
+                ):
+                    continue
+                content_key = normalize_key(f"{video_title} {channel}")
+                if any(term in content_key for term in blocked_terms):
+                    continue
+                variants = {normalize_key(video_title)}
+                if " - " in video_title:
+                    variants.add(normalize_key(video_title.split(" - ", 1)[1]))
+                variants = {
+                    re.sub(
+                        r"\b(official|music|audio|video|lyrics?|lyric|visualizer|hd|hq|remaster(?:ed)?)\b",
+                        "",
+                        variant,
+                    ).strip()
+                    for variant in variants
+                }
+                if any(
+                    variant in known_titles
+                    or variant in known_stems
+                    or any(
+                        len(known) >= 5 and (variant.endswith(known) or known == variant)
+                        for known in known_titles
+                    )
+                    for variant in variants
+                    if variant
+                ):
+                    continue
+                seen_ids.add(video_id)
+                suggestions.append({
+                    "id": video_id,
+                    "title": video_title,
+                    "artist": channel.removesuffix(" - Topic"),
+                    "duration": format_duration(str(int(duration * 1000))),
+                    "thumbnail": f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg",
+                    "url": f"https://www.youtube.com/watch?v={video_id}",
+                })
+                if len(suggestions) >= 8:
+                    break
+            if not suggestions:
+                raise RuntimeError("Im YouTube-Mix wurden keine neuen Musikvorschläge gefunden.")
+            temporary = cache_path.with_suffix(".tmp")
+            temporary.write_text(json.dumps(suggestions, ensure_ascii=False), encoding="utf-8")
+            temporary.chmod(0o600)
+            temporary.replace(cache_path)
+            return suggestions
+
+    def run_ytdlp_json(self, url: str, playlist_end: int) -> dict[str, object]:
+        command = [
+            self.ytdlp_bin,
+            "--dump-single-json",
+            "--flat-playlist",
+            "--playlist-end", str(playlist_end),
+            "--no-warnings",
+            "--skip-download",
+            url,
+        ]
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=35,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise RuntimeError("Die YouTube-Suche hat zu lange gedauert.") from exc
+        if result.returncode != 0:
+            detail = result.stderr.strip().splitlines()
+            message = detail[-1] if detail else "Unbekannter yt-dlp-Fehler"
+            raise RuntimeError(f"YouTube-Suche fehlgeschlagen: {message[:240]}")
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("YouTube hat eine ungültige Suchantwort geliefert.") from exc
+        if not isinstance(payload, dict):
+            raise RuntimeError("YouTube hat keine Suchergebnisse geliefert.")
+        return payload
 
     def friend_songs(self) -> list[dict[str, str]]:
         songs: list[dict[str, str]] = []

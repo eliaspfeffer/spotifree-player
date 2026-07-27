@@ -26,10 +26,26 @@ Downloaded tracks become playable in the personal library after a refresh.
 Pending tracks remain visible as `Wird geladen`. `Library abspielen` starts only
 the selected person's playable tracks.
 
+## YouTube recommendations
+
+After roughly 35 seconds of local playback, the server finds the matching song
+in YouTube Music and reads its YouTube Mix. Results are filtered by duration,
+live status, common non-music terms, and titles already present in the local
+library. The `Neu` tab then shows up to eight recommendations.
+
+Selecting a recommendation pauses all local audio before opening the controlled
+YouTube player. Starting local playback pauses YouTube as well. Videos that a
+rights holder blocks from embedding can be opened through the provided YouTube
+link while local playback remains paused.
+
+Recommendation results are cached for seven days under
+`cache/recommendations`. This feature uses the `yt-dlp` executable from the
+server virtual environment and does not require a YouTube Data API key.
+
 ## Components
 
 - `app/music_server.py`: password login, player, CSV import, personal libraries,
-  Spotify OAuth integration, and shared Codex chat
+  YouTube recommendations, Spotify OAuth integration, and shared Codex chat
 - `scripts/run_spotdl_downloads.sh`: spotDL worker with per-track completion
   state and retries
 - `scripts/ensure_download_running.sh`: starts the worker when URLs are pending

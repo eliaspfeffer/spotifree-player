@@ -31,12 +31,17 @@ the selected person's playable tracks.
 After roughly 35 seconds of local playback, the server finds the matching song
 in YouTube Music and reads its YouTube Mix. Results are filtered by duration,
 live status, common non-music terms, and titles already present in the local
-library. The `Neu` tab then shows up to eight recommendations.
+library. Tracks by the current song's original creators are ranked before the
+broader Mix results. The `Neu` tab then shows up to eight recommendations.
 
 Selecting a recommendation pauses all local audio before opening the controlled
 YouTube player. Starting local playback pauses YouTube as well. Videos that a
 rights holder blocks from embedding can be opened through the provided YouTube
 link while local playback remains paused.
+
+Crossfades are used only while the page is visible. Background tabs switch on a
+single audio deck at the saved volume so browser animation throttling cannot
+leave the next track inaudible.
 
 Recommendation results are cached for seven days under
 `cache/recommendations`. This feature uses the `yt-dlp` executable from the

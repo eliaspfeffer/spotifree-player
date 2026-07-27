@@ -1646,6 +1646,7 @@ class MusicServer(BaseHTTPRequestHandler):
       let seeking = false;
       let transitioning = false;
       let fadeFrame = 0;
+      let fadeToken = 0;
       let shuffleEnabled = false;
       let shufflePlayed = new Set();
       let userVolume = 0.82;
@@ -1887,12 +1888,36 @@ class MusicServer(BaseHTTPRequestHandler):
         youtubeSuggestion = null;
       }}
 
+      function settleAudioTransition() {{
+        fadeToken += 1;
+        window.cancelAnimationFrame(fadeFrame);
+        audioDecks.forEach((deck) => {{
+          if (deck === audio) {{
+            deck.volume = userVolume;
+            return;
+          }}
+          deck.pause();
+          deck.currentTime = 0;
+          deck.volume = userVolume;
+        }});
+        transitioning = false;
+        updateButtons();
+      }}
+
       function loadTrack(index, autoplay = false, overlap = false) {{
         if (!tracks.length) return;
+        const transitionToken = ++fadeToken;
         const safeIndex = ((index % queue.length) + queue.length) % queue.length;
         const nextTrackIndex = queue[safeIndex];
         const outgoing = audio;
-        const shouldOverlap = overlap && autoplay && crossfadeSeconds > 0 && !outgoing.paused && outgoing.src && current !== nextTrackIndex;
+        const shouldOverlap =
+          overlap &&
+          autoplay &&
+          crossfadeSeconds > 0 &&
+          document.visibilityState === "visible" &&
+          !outgoing.paused &&
+          outgoing.src &&
+          current !== nextTrackIndex;
         const incoming = shouldOverlap ? audioDecks.find((deck) => deck !== outgoing) : outgoing;
         const previousTrack = current;
         if (!incoming) return;
@@ -1922,9 +1947,11 @@ class MusicServer(BaseHTTPRequestHandler):
           transitioning = true;
           incoming.volume = 0;
           incoming.play().then(() => {{
+            if (transitionToken !== fadeToken || !transitioning) return;
             const started = performance.now();
             const duration = Math.max(250, crossfadeSeconds * 1000);
             const fade = (now) => {{
+              if (transitionToken !== fadeToken || !transitioning) return;
               const progress = Math.min(1, (now - started) / duration);
               outgoing.volume = userVolume * (1 - progress);
               incoming.volume = userVolume * progress;
@@ -1940,6 +1967,7 @@ class MusicServer(BaseHTTPRequestHandler):
             }};
             fadeFrame = window.requestAnimationFrame(fade);
           }}).catch(() => {{
+            if (transitionToken !== fadeToken) return;
             incoming.pause();
             incoming.volume = userVolume;
             audio = outgoing;
@@ -1969,6 +1997,7 @@ class MusicServer(BaseHTTPRequestHandler):
           audio.play().catch(() => {{}});
         }} else {{
           window.cancelAnimationFrame(fadeFrame);
+          fadeToken += 1;
           transitioning = false;
           audioDecks.forEach((deck) => {{
             deck.pause();
@@ -2091,8 +2120,7 @@ class MusicServer(BaseHTTPRequestHandler):
       }}
 
       async function playRecommendation(suggestion) {{
-        window.cancelAnimationFrame(fadeFrame);
-        transitioning = false;
+        settleAudioTransition();
         audioDecks.forEach((deck) => {{
           deck.pause();
           deck.volume = userVolume;
@@ -2258,6 +2286,9 @@ class MusicServer(BaseHTTPRequestHandler):
       els.crossfade.addEventListener("change", () => {{
         crossfadeSeconds = Number(els.crossfade.value) || 0;
         persistPlayerSettings();
+      }});
+      document.addEventListener("visibilitychange", () => {{
+        if (document.visibilityState === "hidden" && transitioning) settleAudioTransition();
       }});
       audioDecks.forEach((deck) => {{
         deck.addEventListener("play", () => {{
@@ -3112,7 +3143,7 @@ class Server(ThreadingHTTPServer):
             raise RuntimeError("Für diesen Song fehlen Suchinformationen.")
 
         newest_mtime = max((item.stat().st_mtime_ns for item in music_files), default=0)
-        fingerprint = f"{normalize_key(artist)}:{normalize_key(title)}:{len(music_files)}:{newest_mtime}"
+        fingerprint = f"creator-v2:{normalize_key(artist)}:{normalize_key(title)}:{len(music_files)}:{newest_mtime}"
         cache_path = self.recommendation_cache / f"{hashlib.sha256(fingerprint.encode()).hexdigest()}.json"
         with self.recommendation_lock:
             if cache_path.exists() and time.time() - cache_path.stat().st_mtime < 7 * 86400:
@@ -3154,9 +3185,21 @@ class Server(ThreadingHTTPServer):
                 "gameplay", "trailer", "news", "recap", "audiobook", "full movie",
                 "behind the scenes", "making of", "live stream",
             }
+            creator_names = [
+                str(item).strip()
+                for item in (meta.get("artists") or [])
+                if str(item).strip()
+            ]
+            if not creator_names:
+                creator_names = [part.strip() for part in artist.split(",") if part.strip()]
+            creator_keys = {
+                normalize_key(item)
+                for item in creator_names
+                if len(normalize_key(item)) >= 3
+            }
             suggestions: list[dict[str, object]] = []
             seen_ids: set[str] = set()
-            for item in mix.get("entries", []):
+            for mix_index, item in enumerate(mix.get("entries", [])):
                 if not isinstance(item, dict):
                     continue
                 video_id = str(item.get("id") or "")
@@ -3199,6 +3242,19 @@ class Server(ThreadingHTTPServer):
                     if variant
                 ):
                     continue
+                channel_key = normalize_key(channel.removesuffix(" - Topic"))
+                video_title_key = normalize_key(video_title)
+                creator_score = 0
+                if any(channel_key == key for key in creator_keys):
+                    creator_score = 3
+                elif any(
+                    key in channel_key or channel_key in key
+                    for key in creator_keys
+                    if len(channel_key) >= 3
+                ):
+                    creator_score = 2
+                elif any(video_title_key.startswith(f"{key} ") for key in creator_keys):
+                    creator_score = 1
                 seen_ids.add(video_id)
                 suggestions.append({
                     "id": video_id,
@@ -3207,11 +3263,16 @@ class Server(ThreadingHTTPServer):
                     "duration": format_duration(str(int(duration * 1000))),
                     "thumbnail": f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg",
                     "url": f"https://www.youtube.com/watch?v={video_id}",
+                    "_creator_score": creator_score,
+                    "_mix_index": mix_index,
                 })
-                if len(suggestions) >= 8:
-                    break
             if not suggestions:
                 raise RuntimeError("Im YouTube-Mix wurden keine neuen Musikvorschläge gefunden.")
+            suggestions.sort(key=lambda item: (-int(item["_creator_score"]), int(item["_mix_index"])))
+            suggestions = suggestions[:8]
+            for suggestion in suggestions:
+                suggestion.pop("_creator_score", None)
+                suggestion.pop("_mix_index", None)
             temporary = cache_path.with_suffix(".tmp")
             temporary.write_text(json.dumps(suggestions, ensure_ascii=False), encoding="utf-8")
             temporary.chmod(0o600)

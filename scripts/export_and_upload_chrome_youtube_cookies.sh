@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SERVER_SSH="${SERVER_SSH:-music-server}"
+BASE_DIR="${BASE_DIR:-/opt/spotify-song-server}"
 tmp_dir="$(mktemp -d)"
 raw="$tmp_dir/raw-cookies.txt"
 filtered="$tmp_dir/youtube-google-cookies.txt"
@@ -52,9 +54,8 @@ if [[ "$(awk '!/^#/ && NF >= 7 { count++ } END { print count + 0 }' "$filtered")
   exit 1
 fi
 
-scp "$filtered" music-server:/opt/spotify-song-server/cookies/youtube.txt >/dev/null
-ssh music-server '
-  chmod 600 /opt/spotify-song-server/cookies/youtube.txt &&
-  echo "server_cookie_file=$(ls -l /opt/spotify-song-server/cookies/youtube.txt)" &&
-  echo "server_cookie_lines=$(wc -l < /opt/spotify-song-server/cookies/youtube.txt)"
-'
+scp "$filtered" "$SERVER_SSH:$BASE_DIR/cookies/youtube.txt" >/dev/null
+ssh "$SERVER_SSH" \
+  "chmod 600 '$BASE_DIR/cookies/youtube.txt' &&
+   echo \"server_cookie_file=\$(ls -l '$BASE_DIR/cookies/youtube.txt')\" &&
+   echo \"server_cookie_lines=\$(wc -l < '$BASE_DIR/cookies/youtube.txt')\""

@@ -1512,7 +1512,7 @@ class MusicServer(BaseHTTPRequestHandler):
   <main>
     <header class="app-header">
       <div class="brand">
-        <span class="brand-mark">EP</span>
+        <span class="brand-mark">SF</span>
         <div>
           <h1>Library</h1>
           <div class="brand-subtitle">{len(all_files)} Songs · {free / (1024 ** 3):.1f} GB frei</div>

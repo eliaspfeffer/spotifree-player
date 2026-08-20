@@ -29,7 +29,8 @@ a personal library, and discovers related music through YouTube Mixes.
   crossfade, swipe navigation, downloads, and continuous background playback.
 - **Useful discovery.** After listening for about 35 seconds, the `Neu` tab
   surfaces music from the original creators first, then related YouTube Mix
-  tracks that are not already in the library.
+  tracks that are not already in the library. Like a recommendation to add it
+  to a selected personal library and queue it for download immediately.
 - **Small and inspectable.** The web application uses Python's standard library
   and plain browser JavaScript. Runtime state stays outside Git.
 
@@ -49,9 +50,11 @@ Spotify / Exportify CSV
 ```
 
 Spotifree never adds recommendations to a person's library automatically.
-Selecting a YouTube recommendation pauses local playback first. If a rights
-holder blocks embedding, the original YouTube page remains available as a
-fallback.
+Select a personal library and press the heart on a recommendation to save it;
+the same deduplicated spotDL worker used for Spotify imports downloads the
+track. Selecting a YouTube recommendation pauses local playback first. If a
+rights holder blocks embedding, the original YouTube page remains available as
+a fallback.
 
 ## Quick start
 

@@ -126,6 +126,9 @@ class MusicServer(BaseHTTPRequestHandler):
             return
 
         params = self.read_urlencoded_form()
+        if parsed.path == "/api/recommendations/like":
+            self.like_recommendation(params)
+            return
         if parsed.path == "/api/codex/chat":
             self.codex_chat(params)
             return
@@ -198,6 +201,46 @@ class MusicServer(BaseHTTPRequestHandler):
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_GATEWAY)
             return
         self.send_json({"suggestions": suggestions, "source": source})
+
+    def like_recommendation(self, params: dict[str, list[str]]) -> None:
+        source = params.get("source", [""])[0].strip()
+        recommendation_id = params.get("recommendation_id", [""])[0].strip()
+        library_key = params.get("library", [""])[0].strip()
+        if not source.startswith("/files/"):
+            self.send_json({"error": "Ungültiger Ausgangssong."}, HTTPStatus.BAD_REQUEST)
+            return
+        path = self.resolve_music_path(source.removeprefix("/files/"))
+        if path is None:
+            self.send_json({"error": "Der Ausgangssong wurde nicht gefunden."}, HTTPStatus.NOT_FOUND)
+            return
+        try:
+            result = self.server.add_recommendation_to_library(
+                path,
+                self.music_files(),
+                recommendation_id,
+                library_key,
+            )
+            self.server.start_download_if_needed()
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        except RuntimeError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_GATEWAY)
+            return
+        except (OSError, csv.Error):
+            self.send_json({"error": "Die Library konnte nicht aktualisiert werden."}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+        payload = json.dumps(result, ensure_ascii=False).encode("utf-8")
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header(
+            "Set-Cookie",
+            f"friend_library={quote(library_key)}; Path=/; SameSite=Lax; Max-Age=31536000",
+        )
+        self.end_headers()
+        self.wfile.write(payload)
 
     def codex_chat(self, params: dict[str, list[str]]) -> None:
         message = params.get("message", [""])[0].strip()
@@ -379,13 +422,24 @@ class MusicServer(BaseHTTPRequestHandler):
             ensure_ascii=False,
         )
         player_json_script = player_json.replace("</", "<\\/")
-        friends_rows, friend_queues = self.friends_rows(
+        friends_rows, friend_queues, selected_friend, recommendation_likes = self.friends_rows(
             player_entries,
             track_indexes,
             selected_friend,
             params,
         )
         friend_queues_script = json.dumps(friend_queues, ensure_ascii=False).replace("</", "<\\/")
+        recommendation_likes_script = json.dumps(recommendation_likes, ensure_ascii=False).replace("</", "<\\/")
+        library_options = []
+        for key, details in recommendation_likes.items():
+            selected = " selected" if key == selected_friend else ""
+            library_options.append(
+                f'<option value="{html.escape(key, quote=True)}"{selected}>'
+                f'{html.escape(str(details["owner"]))}</option>'
+            )
+        if not library_options:
+            library_options.append('<option value="">Zuerst Library importieren</option>')
+        library_select_disabled = " disabled" if not recommendation_likes else ""
         tab_class = lambda name: "tab active" if active_view == name else "tab"
         panel_class = lambda name: "panel active" if active_view == name else "panel"
 
@@ -1319,6 +1373,9 @@ class MusicServer(BaseHTTPRequestHandler):
     .discover-header p {{ max-width: 560px; margin: 7px 0 0; color: var(--muted); }}
     .recommendation-status {{ color: var(--muted); font-size: .78rem; white-space: nowrap; }}
     .recommendation-status.loading {{ color: var(--accent); }}
+    .discover-actions {{ display: grid; gap: 7px; justify-items: end; }}
+    .discover-library-control {{ display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: .75rem; font-weight: 750; }}
+    .discover-library-control select {{ min-width: 150px; margin: 0; padding: 8px 30px 8px 10px; }}
     .youtube-stage {{
       display: grid;
       grid-template-columns: minmax(320px, .95fr) minmax(0, 1.05fr);
@@ -1397,8 +1454,22 @@ class MusicServer(BaseHTTPRequestHandler):
       box-shadow: 0 8px 22px rgba(0,0,0,.35);
     }}
     .recommendation-copy {{ padding: 11px 12px 13px; }}
+    .recommendation-copy-row {{ display: grid; grid-template-columns: minmax(0, 1fr) 34px; gap: 8px; align-items: center; }}
     .recommendation-title {{ white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 780; }}
     .recommendation-meta {{ margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted); font-size: .76rem; }}
+    .recommendation-like {{
+      width: 34px;
+      height: 34px;
+      margin: 0;
+      padding: 0;
+      border-color: var(--line);
+      border-radius: 50%;
+      color: var(--muted);
+      font-size: 1.15rem;
+      line-height: 1;
+    }}
+    .recommendation-like:hover, .recommendation-like[aria-pressed="true"] {{ border-color: var(--accent-strong); color: var(--accent-strong); }}
+    .recommendation-like:disabled {{ cursor: wait; opacity: .65; }}
     .tab-notice {{
       display: inline-block;
       width: 6px;
@@ -1486,6 +1557,9 @@ class MusicServer(BaseHTTPRequestHandler):
       .friend-track .chips {{ display: none; }}
       [data-panel="discover"] {{ padding-top: 14px; }}
       .discover-header {{ display: block; }}
+      .discover-actions {{ margin-top: 12px; justify-items: start; }}
+      .discover-library-control {{ width: 100%; justify-content: space-between; }}
+      .discover-library-control select {{ min-width: 0; max-width: 65%; }}
       .recommendation-status {{ display: block; margin-top: 8px; white-space: normal; }}
       .youtube-stage {{ grid-template-columns: 1fr; gap: 14px; }}
       .recommendation-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }}
@@ -1592,7 +1666,13 @@ class MusicServer(BaseHTTPRequestHandler):
           <h2>Neue Musik</h2>
           <p>YouTube-Mix-Vorschläge passend zum gehörten Song, ohne deine Library automatisch zu verändern.</p>
         </div>
-        <span class="recommendation-status" id="recommendation-status">Höre einen Song, um Vorschläge zu laden.</span>
+        <div class="discover-actions">
+          <label class="discover-library-control" for="recommendation-library">
+            <span>Zu Library</span>
+            <select id="recommendation-library"{library_select_disabled}>{"".join(library_options)}</select>
+          </label>
+          <span class="recommendation-status" id="recommendation-status">Höre einen Song, um Vorschläge zu laden.</span>
+        </div>
       </header>
       <div class="youtube-stage" id="youtube-stage" hidden>
         <div class="youtube-frame"><div id="youtube-player"></div></div>
@@ -1635,10 +1715,12 @@ class MusicServer(BaseHTTPRequestHandler):
   </aside>
   <script id="tracks-data" type="application/json">{player_json_script}</script>
   <script id="friend-queues-data" type="application/json">{friend_queues_script}</script>
+  <script id="recommendation-likes-data" type="application/json">{recommendation_likes_script}</script>
   <script>
     (() => {{
       const tracks = JSON.parse(document.getElementById("tracks-data").textContent || "[]");
       const friendQueues = JSON.parse(document.getElementById("friend-queues-data").textContent || "{{}}");
+      const recommendationLikes = JSON.parse(document.getElementById("recommendation-likes-data").textContent || "{{}}");
       const audioDecks = [new Audio(), new Audio()];
       audioDecks.forEach((deck) => {{ deck.preload = "metadata"; }});
       let audio = audioDecks[0];
@@ -1660,6 +1742,7 @@ class MusicServer(BaseHTTPRequestHandler):
       let youtubeActive = false;
       let youtubeSuggestion = null;
       let recommendationItems = [];
+      let recommendationSource = "";
       const inlineAudios = Array.from(document.querySelectorAll("[data-inline-audio]"));
       const els = {{
         title: document.getElementById("player-title"),
@@ -1686,6 +1769,7 @@ class MusicServer(BaseHTTPRequestHandler):
         recommendationNotice: document.getElementById("recommendation-notice"),
         recommendationStatus: document.getElementById("recommendation-status"),
         recommendationGrid: document.getElementById("recommendation-grid"),
+        recommendationLibrary: document.getElementById("recommendation-library"),
         youtubeStage: document.getElementById("youtube-stage"),
         youtubeTitle: document.getElementById("youtube-title"),
         youtubeArtist: document.getElementById("youtube-artist"),
@@ -2194,10 +2278,61 @@ class MusicServer(BaseHTTPRequestHandler):
           const meta = document.createElement("div");
           meta.className = "recommendation-meta";
           meta.textContent = [suggestion.artist, suggestion.duration].filter(Boolean).join(" · ");
-          copy.append(title, meta);
+          const text = document.createElement("div");
+          text.append(title, meta);
+          const like = document.createElement("button");
+          like.type = "button";
+          like.className = "recommendation-like";
+          like.dataset.recommendationId = suggestion.id;
+          like.title = "Zur persönlichen Library hinzufügen";
+          like.ariaLabel = suggestion.title + " zur persönlichen Library hinzufügen";
+          const isLiked = (recommendationLikes[els.recommendationLibrary.value]?.ids || []).includes(suggestion.id);
+          like.setAttribute("aria-pressed", String(isLiked));
+          like.textContent = isLiked ? "♥" : "♡";
+          like.addEventListener("click", () => likeRecommendation(suggestion, like));
+          const row = document.createElement("div");
+          row.className = "recommendation-copy-row";
+          row.append(text, like);
+          copy.append(row);
           card.append(thumb, copy);
           els.recommendationGrid.append(card);
         }});
+      }}
+
+      async function likeRecommendation(suggestion, button) {{
+        const library = els.recommendationLibrary.value;
+        if (!library) {{
+          els.recommendationStatus.textContent = "Importiere zuerst deine Spotify-Library.";
+          return;
+        }}
+        if (button.getAttribute("aria-pressed") === "true") return;
+        button.disabled = true;
+        els.recommendationStatus.textContent = "Song wird zur Library hinzugefügt …";
+        try {{
+          const body = new URLSearchParams({{
+            source: recommendationSource,
+            recommendation_id: suggestion.id,
+            library,
+          }});
+          const response = await fetch("/api/recommendations/like", {{
+            method: "POST",
+            headers: {{ "Content-Type": "application/x-www-form-urlencoded" }},
+            body,
+          }});
+          const payload = await response.json();
+          if (!response.ok) throw new Error(payload.error || "Song konnte nicht hinzugefügt werden.");
+          const liked = recommendationLikes[library]?.ids || [];
+          if (!liked.includes(suggestion.id)) liked.push(suggestion.id);
+          button.setAttribute("aria-pressed", "true");
+          button.textContent = "♥";
+          els.recommendationStatus.textContent = payload.queued
+            ? "Geliket · Download wurde gestartet"
+            : "Bereits in deiner Library";
+        }} catch (error) {{
+          els.recommendationStatus.textContent = error.message;
+        }} finally {{
+          button.disabled = false;
+        }}
       }}
 
       async function loadRecommendations() {{
@@ -2213,6 +2348,7 @@ class MusicServer(BaseHTTPRequestHandler):
           }});
           const payload = await response.json();
           if (!response.ok) throw new Error(payload.error || "Vorschläge konnten nicht geladen werden.");
+          recommendationSource = payload.source || track.src;
           renderRecommendations(payload.suggestions || []);
           els.recommendationStatus.textContent = (payload.suggestions || []).length + " neue Vorschläge";
           if (document.body.dataset.activeTab !== "discover") els.recommendationNotice.hidden = false;
@@ -2227,6 +2363,7 @@ class MusicServer(BaseHTTPRequestHandler):
       document.querySelectorAll(".tab").forEach((tab) => {{
         tab.addEventListener("click", () => setTab(tab.dataset.tab));
       }});
+      els.recommendationLibrary.addEventListener("change", () => renderRecommendations(recommendationItems));
       document.querySelectorAll("[data-play-index]").forEach((button) => {{
         button.addEventListener("click", () => {{
           shuffleEnabled = false;
@@ -2404,7 +2541,7 @@ class MusicServer(BaseHTTPRequestHandler):
         track_indexes: dict[Path, int],
         selected_friend: str,
         params: dict[str, list[str]],
-    ) -> tuple[str, dict[str, list[int]]]:
+    ) -> tuple[str, dict[str, list[int]], str, dict[str, dict[str, object]]]:
         songs = self.server.friend_songs()
         libraries: dict[str, dict[str, object]] = {}
         for row in songs:
@@ -2416,6 +2553,19 @@ class MusicServer(BaseHTTPRequestHandler):
 
         if selected_friend not in libraries:
             selected_friend = next(iter(libraries), "")
+
+        recommendation_likes: dict[str, dict[str, object]] = {}
+        for key, library in libraries.items():
+            liked_ids = []
+            for row in library["songs"]:
+                uri = str(row.get("uri") or "")
+                video_id = parse_qs(urlparse(uri).query).get("v", [""])[0]
+                if re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id):
+                    liked_ids.append(video_id)
+            recommendation_likes[key] = {
+                "owner": library["owner"],
+                "ids": liked_ids,
+            }
 
         by_stem = {normalize_key(path.stem): path for path, _ in player_entries}
         by_title: dict[str, list[Path]] = {}
@@ -2523,7 +2673,7 @@ class MusicServer(BaseHTTPRequestHandler):
       {success}
       <nav class="friend-switches" aria-label="Freundes-Libraries">{switches}</nav>
       {library_html}"""
-        return content, friend_queues
+        return content, friend_queues, selected_friend, recommendation_likes
 
     def friend_row(self, row: dict[str, object], owner_key: str) -> str:
         title = html.escape(str(row.get("title", "")))
@@ -3261,6 +3411,7 @@ class Server(ThreadingHTTPServer):
                     "title": video_title,
                     "artist": channel.removesuffix(" - Topic"),
                     "duration": format_duration(str(int(duration * 1000))),
+                    "duration_seconds": int(duration),
                     "thumbnail": f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg",
                     "url": f"https://www.youtube.com/watch?v={video_id}",
                     "_creator_score": creator_score,
@@ -3328,7 +3479,7 @@ class Server(ThreadingHTTPServer):
                         ).replace(";", ", ").strip()
                         if not title:
                             continue
-                        uri = self.spotify_track_url(
+                        uri = self.download_track_url(
                             row.get("Track URI")
                             or row.get("Spotify URI")
                             or row.get("Spotify URL")
@@ -3363,6 +3514,32 @@ class Server(ThreadingHTTPServer):
             return ""
         return f"https://open.spotify.com/track/{track_id}"
 
+    def download_track_url(self, value: str) -> str:
+        spotify_url = self.spotify_track_url(value)
+        if spotify_url:
+            return spotify_url
+        parsed = urlparse((value or "").strip())
+        if parsed.scheme != "https" or parsed.hostname not in {"youtube.com", "www.youtube.com", "music.youtube.com", "youtu.be"}:
+            return ""
+        if parsed.hostname == "youtu.be":
+            video_id = parsed.path.strip("/").split("/", 1)[0]
+        else:
+            video_id = parse_qs(parsed.query).get("v", [""])[0]
+        if not re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id):
+            return ""
+        return f"https://www.youtube.com/watch?v={video_id}"
+
+    def clean_recommendation_title(self, title: str, artist: str) -> str:
+        title = title.strip()
+        artist_prefix = re.compile(rf"^{re.escape(artist.strip())}\s*[-–—:]\s*", re.IGNORECASE)
+        cleaned = artist_prefix.sub("", title).strip()
+        label = (
+            r"(?:official\s+)?(?:music\s+)?video|(?:official\s+)?audio|"
+            r"lyric(?:s|\s+video)?|visuali[sz]er"
+        )
+        cleaned = re.sub(rf"\s*[\[(](?:{label})[\])]\s*$", "", cleaned, flags=re.IGNORECASE).strip()
+        return cleaned or title
+
     def friend_key(self, owner: str) -> str:
         stem = normalize_key(owner).replace(" ", "-")[:40] or "friend"
         digest = hashlib.sha256(owner.casefold().encode("utf-8")).hexdigest()[:8]
@@ -3376,7 +3553,7 @@ class Server(ThreadingHTTPServer):
             or row.get("Artists")
             or ""
         ).replace(", ", ";").strip()
-        uri = self.spotify_track_url(
+        uri = self.download_track_url(
             row.get("Track URI")
             or row.get("Spotify URI")
             or row.get("Spotify URL")
@@ -3397,6 +3574,92 @@ class Server(ThreadingHTTPServer):
             "Added At": (row.get("Added At") or "").strip(),
             "Added By": owner,
             "Source": (row.get("Source") or "Exportify CSV").strip(),
+        }
+
+    def add_recommendation_to_library(
+        self,
+        source_path: Path,
+        music_files: list[Path],
+        recommendation_id: str,
+        library_key: str,
+    ) -> dict[str, object]:
+        if not re.fullmatch(r"[A-Za-z0-9_-]{11}", recommendation_id):
+            raise ValueError("Ungültiger Musikvorschlag.")
+        if (
+            not re.fullmatch(r"[A-Za-z0-9._-]{1,100}", library_key)
+            or library_key in {".", ".."}
+        ):
+            raise ValueError("Wähle zuerst deine persönliche Library aus.")
+        csv_path = self.friends_dir / f"{library_key}.csv"
+        if not csv_path.is_file():
+            raise ValueError("Die ausgewählte Library wurde nicht gefunden.")
+
+        suggestion = next(
+            (
+                item for item in self.recommendations_for(source_path, music_files)
+                if str(item.get("id") or "") == recommendation_id
+            ),
+            None,
+        )
+        if suggestion is None:
+            raise ValueError("Der Musikvorschlag ist nicht mehr verfügbar.")
+
+        video_url = f"https://www.youtube.com/watch?v={recommendation_id}"
+        title = str(suggestion.get("title") or "").strip()
+        artist = str(suggestion.get("artist") or "YouTube Music").strip()
+        clean_title = self.clean_recommendation_title(title, artist)
+
+        with self.library_lock:
+            rows: list[dict[str, str]] = []
+            owner = "Freund"
+            with csv_path.open(newline="", encoding="utf-8-sig") as handle:
+                for existing in csv.DictReader(handle):
+                    normalized = self.normalized_friend_row(existing, existing.get("Added By") or owner)
+                    if normalized:
+                        owner = normalized["Added By"] or owner
+                        rows.append(normalized)
+
+            identity = normalize_key(f"{artist} - {clean_title}")
+            already_liked = any(
+                self.download_track_url(row["Track URI"]) == video_url
+                or normalize_key(f"{row['Artist Name(s)'].replace(';', ', ')} - {row['Track Name']}") == identity
+                for row in rows
+            )
+            if not already_liked:
+                rows.append({
+                    "Track URI": video_url,
+                    "Track Name": clean_title,
+                    "Artist Name(s)": artist.replace(", ", ";"),
+                    "Album Name": "",
+                    "Genres": "",
+                    "Release Date": "",
+                    "Duration (ms)": str(int(suggestion.get("duration_seconds") or 0) * 1000),
+                    "Added At": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    "Added By": owner,
+                    "Source": "YouTube recommendation",
+                })
+                fieldnames = [
+                    "Track URI", "Track Name", "Artist Name(s)", "Album Name", "Genres",
+                    "Release Date", "Duration (ms)", "Added At", "Added By", "Source",
+                ]
+                temporary = csv_path.with_suffix(".tmp")
+                with temporary.open("w", newline="", encoding="utf-8") as handle:
+                    writer = csv.DictWriter(handle, fieldnames=fieldnames)
+                    writer.writeheader()
+                    writer.writerows(sorted(
+                        rows,
+                        key=lambda item: (item["Artist Name(s)"].casefold(), item["Track Name"].casefold()),
+                    ))
+                temporary.chmod(0o600)
+                temporary.replace(csv_path)
+
+            queued = self.append_track_urls_unlocked([video_url]) if not already_liked else 0
+            self.metadata_by_stem, self.metadata_by_title = self.load_metadata()
+        return {
+            "liked": True,
+            "already_liked": already_liked,
+            "queued": bool(queued),
+            "library": library_key,
         }
 
     def import_friend_csv(self, owner: str, filename: str, payload: bytes) -> dict[str, object]:
@@ -3649,7 +3912,7 @@ class Server(ThreadingHTTPServer):
             existing = {line.strip() for line in self.track_file.read_text(encoding="utf-8").splitlines() if line.strip()}
         additions = []
         for uri in uris:
-            url = self.spotify_track_url(uri)
+            url = self.download_track_url(uri)
             if not url:
                 continue
             if url not in existing:

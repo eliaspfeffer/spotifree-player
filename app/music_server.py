@@ -1880,6 +1880,10 @@ class MusicServer(BaseHTTPRequestHandler):
       let youtubeSuggestion = null;
       let recommendationItems = [];
       let recommendationSource = "";
+      let localPlaybackWanted = false;
+      let interruptionResumeTimer = 0;
+      let interruptionResumeUntil = 0;
+      const audioSession = navigator.audioSession || null;
       const favoriteGenresStorageKey = "music-player-favorite-genres";
       const favoritePlaylistsStorageKey = "music-youtube-favorite-playlists";
       let favoriteGenres = new Set();
@@ -2058,6 +2062,41 @@ class MusicServer(BaseHTTPRequestHandler):
         els.miniPlay.textContent = text;
       }}
 
+      function setLocalPlaybackWanted(wanted) {{
+        localPlaybackWanted = wanted;
+        if (!wanted) {{
+          window.clearTimeout(interruptionResumeTimer);
+          interruptionResumeUntil = 0;
+        }}
+        if (navigator.mediaSession) {{
+          try {{
+            navigator.mediaSession.playbackState = wanted && !audio.paused ? "playing" : "paused";
+          }} catch (_) {{}}
+        }}
+      }}
+
+      // iOS pauses media while dictation owns the audio session. Keep the
+      // user's play intent and retry only after that external interruption.
+      function resumeLocalPlaybackAfterInterruption(delay = 180) {{
+        if (!localPlaybackWanted || youtubeActive || transitioning || !audio.src) return;
+        if (!interruptionResumeUntil) interruptionResumeUntil = Date.now() + 60000;
+        window.clearTimeout(interruptionResumeTimer);
+        interruptionResumeTimer = window.setTimeout(() => {{
+          if (!localPlaybackWanted || youtubeActive || transitioning || !audio.src) return;
+          if (Date.now() > interruptionResumeUntil) {{
+            interruptionResumeUntil = 0;
+            return;
+          }}
+          if (audioSession?.state === "interrupted") {{
+            resumeLocalPlaybackAfterInterruption(350);
+            return;
+          }}
+          audio.play().then(() => {{
+            if (!audio.paused) interruptionResumeUntil = 0;
+          }}).catch(() => resumeLocalPlaybackAfterInterruption(500));
+        }}, delay);
+      }}
+
       function persistPlayerSettings() {{
         try {{
           window.localStorage.setItem("player-volume", String(userVolume));
@@ -2206,6 +2245,7 @@ class MusicServer(BaseHTTPRequestHandler):
 
       function loadTrack(index, autoplay = false, overlap = false) {{
         if (!tracks.length) return;
+        if (autoplay) setLocalPlaybackWanted(true);
         const transitionToken = ++fadeToken;
         const safeIndex = ((index % queue.length) + queue.length) % queue.length;
         const nextTrackIndex = queue[safeIndex];
@@ -2294,8 +2334,10 @@ class MusicServer(BaseHTTPRequestHandler):
         if (audio.paused) {{
           stopYoutubeForLocal();
           renderTrack();
-          audio.play().catch(() => {{}});
+          setLocalPlaybackWanted(true);
+          audio.play().catch(() => resumeLocalPlaybackAfterInterruption());
         }} else {{
+          setLocalPlaybackWanted(false);
           window.cancelAnimationFrame(fadeFrame);
           fadeToken += 1;
           transitioning = false;
@@ -2342,7 +2384,7 @@ class MusicServer(BaseHTTPRequestHandler):
           return;
         }}
         const position = shuffleEnabled ? chooseShuffleNext() : queueIndexFor(current) + 1;
-        loadTrack(position, forceAutoplay === null ? !audio.paused : forceAutoplay, overlap);
+        loadTrack(position, forceAutoplay === null ? localPlaybackWanted : forceAutoplay, overlap);
       }}
 
       function prev() {{
@@ -2359,7 +2401,7 @@ class MusicServer(BaseHTTPRequestHandler):
           audio.currentTime = 0;
           return;
         }}
-        loadTrack(queueIndexFor(current) - 1, !audio.paused, false);
+        loadTrack(queueIndexFor(current) - 1, localPlaybackWanted, false);
       }}
 
       function shuffle() {{
@@ -2420,6 +2462,7 @@ class MusicServer(BaseHTTPRequestHandler):
       }}
 
       async function playRecommendation(suggestion) {{
+        setLocalPlaybackWanted(false);
         settleAudioTransition();
         audioDecks.forEach((deck) => {{
           deck.pause();
@@ -2628,6 +2671,10 @@ class MusicServer(BaseHTTPRequestHandler):
       }}
 
       async function playPlaylist(playlist) {{
+        setLocalPlaybackWanted(false);
+        settleAudioTransition();
+        audioDecks.forEach((deck) => deck.pause());
+        pauseInlineAudios();
         els.playlistNow.textContent = "Spielt: " + playlist.title + (playlist.channel ? " · " + playlist.channel : "");
         els.playlistStage.hidden = false;
         els.playlistStage.scrollIntoView({{ behavior: "smooth", block: "nearest" }});
@@ -2723,6 +2770,7 @@ class MusicServer(BaseHTTPRequestHandler):
       }});
       inlineAudios.forEach((element) => {{
         element.addEventListener("play", () => {{
+          setLocalPlaybackWanted(false);
           audioDecks.forEach((deck) => {{ deck.pause(); }});
           pauseInlineAudios(element);
         }});
@@ -2756,10 +2804,24 @@ class MusicServer(BaseHTTPRequestHandler):
       }});
       document.addEventListener("visibilitychange", () => {{
         if (document.visibilityState === "hidden" && transitioning) settleAudioTransition();
+        if (document.visibilityState === "visible" && localPlaybackWanted && audio.paused) {{
+          resumeLocalPlaybackAfterInterruption();
+        }}
+      }});
+      window.addEventListener("focus", () => {{
+        if (localPlaybackWanted && audio.paused) resumeLocalPlaybackAfterInterruption();
+      }});
+      window.addEventListener("pageshow", () => {{
+        if (localPlaybackWanted && audio.paused) resumeLocalPlaybackAfterInterruption();
       }});
       audioDecks.forEach((deck) => {{
         deck.addEventListener("play", () => {{
           if (deck === audio) {{
+            window.clearTimeout(interruptionResumeTimer);
+            interruptionResumeUntil = 0;
+            if (navigator.mediaSession) {{
+              try {{ navigator.mediaSession.playbackState = "playing"; }} catch (_) {{}}
+            }}
             if (youtubePlayer?.pauseVideo) youtubePlayer.pauseVideo();
             youtubeActive = false;
             updateButtons();
@@ -2767,7 +2829,12 @@ class MusicServer(BaseHTTPRequestHandler):
           }}
         }});
         deck.addEventListener("pause", () => {{
-          if (deck === audio) updateButtons();
+          if (deck === audio) {{
+            updateButtons();
+            if (localPlaybackWanted && !transitioning && !youtubeActive) {{
+              resumeLocalPlaybackAfterInterruption();
+            }}
+          }}
         }});
         deck.addEventListener("ended", () => {{
           if (deck === audio && !transitioning) next(true, false);
@@ -2798,6 +2865,34 @@ class MusicServer(BaseHTTPRequestHandler):
           }}
         }});
       }});
+
+      if (audioSession) {{
+        try {{ audioSession.type = "playback"; }} catch (_) {{}}
+        if (typeof audioSession.addEventListener === "function") {{
+          audioSession.addEventListener("statechange", () => {{
+            if (audioSession.state !== "interrupted" && localPlaybackWanted && audio.paused) {{
+              resumeLocalPlaybackAfterInterruption(80);
+            }}
+          }});
+        }}
+      }}
+      if (navigator.mediaSession) {{
+        try {{
+          navigator.mediaSession.setActionHandler("play", () => {{
+            if (audio.paused) {{
+              setLocalPlaybackWanted(true);
+              audio.play().catch(() => resumeLocalPlaybackAfterInterruption());
+            }}
+          }});
+          navigator.mediaSession.setActionHandler("pause", () => {{
+            setLocalPlaybackWanted(false);
+            settleAudioTransition();
+            audioDecks.forEach((deck) => deck.pause());
+          }});
+          navigator.mediaSession.setActionHandler("nexttrack", () => next(true, false));
+          navigator.mediaSession.setActionHandler("previoustrack", () => prev());
+        }} catch (_) {{}}
+      }}
 
       let touchStart = 0;
       document.addEventListener("touchstart", (event) => {{

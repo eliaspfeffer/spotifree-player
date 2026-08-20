@@ -95,6 +95,9 @@ class MusicServer(BaseHTTPRequestHandler):
         if parsed.path == "/api/recommendations":
             self.music_recommendations(params)
             return
+        if parsed.path == "/api/youtube/playlists":
+            self.youtube_playlists(params)
+            return
         if parsed.path.startswith("/cover/"):
             self.serve_cover(parsed.path.removeprefix("/cover/"))
             return
@@ -198,6 +201,18 @@ class MusicServer(BaseHTTPRequestHandler):
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_GATEWAY)
             return
         self.send_json({"suggestions": suggestions, "source": source})
+
+    def youtube_playlists(self, params: dict[str, list[str]]) -> None:
+        query = params.get("q", [""])[0].strip()
+        if len(query) < 2 or len(query) > 120:
+            self.send_json({"error": "Bitte gib 2 bis 120 Zeichen ein."}, HTTPStatus.BAD_REQUEST)
+            return
+        try:
+            playlists = self.server.youtube_playlists_for(query)
+        except RuntimeError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_GATEWAY)
+            return
+        self.send_json({"playlists": playlists})
 
     def codex_chat(self, params: dict[str, list[str]]) -> None:
         message = params.get("message", [""])[0].strip()
@@ -334,7 +349,7 @@ class MusicServer(BaseHTTPRequestHandler):
         artist = params.get("artist", [""])[0].strip()
         sort = params.get("sort", ["title"])[0].strip() or "title"
         active_view = params.get("view", ["player"])[0].strip()
-        if active_view not in {"player", "playlist", "friends", "discover"}:
+        if active_view not in {"player", "playlist", "friends", "discover", "search"}:
             active_view = "player"
         selected_friend = params.get("friend", [self.cookie_value("friend_library")])[0].strip()
         all_files = self.music_files()
@@ -923,7 +938,7 @@ class MusicServer(BaseHTTPRequestHandler):
       top: auto;
       z-index: 5;
       width: fit-content;
-      grid-template-columns: repeat(4, auto);
+      grid-template-columns: repeat(5, auto);
       align-self: center;
       gap: 3px;
       margin: 0;
@@ -1046,6 +1061,51 @@ class MusicServer(BaseHTTPRequestHandler):
       overflow: hidden;
       text-overflow: ellipsis;
     }}
+    .player-genres {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+      margin-top: 12px;
+    }}
+    .player-genre {{
+      width: auto;
+      margin: 0;
+      padding: 6px 10px;
+      border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+      border-radius: 999px;
+      color: var(--accent);
+      background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+      font-size: .72rem;
+      font-weight: 720;
+    }}
+    .player-genre-group {{
+      display: inline-flex;
+      overflow: hidden;
+      border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line));
+      border-radius: 999px;
+      background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+    }}
+    .player-genre-group .player-genre {{
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+    }}
+    .genre-favorite {{
+      width: 32px;
+      margin: 0;
+      padding: 0;
+      border: 0;
+      border-left: 1px solid color-mix(in srgb, var(--accent) 28%, var(--line));
+      border-radius: 0;
+      color: var(--muted);
+      background: transparent;
+      font-size: .92rem;
+      line-height: 1;
+    }}
+    .genre-favorite[aria-pressed="true"] {{
+      color: #d94668;
+      background: color-mix(in srgb, #d94668 12%, var(--surface));
+    }}
     .progress {{
       display: grid;
       grid-template-columns: 1fr auto;
@@ -1129,6 +1189,30 @@ class MusicServer(BaseHTTPRequestHandler):
       border-color: var(--line);
       background-color: var(--surface);
       font-size: .78rem;
+    }}
+    .offline-download {{
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+      padding-top: 4px;
+    }}
+    .offline-download button {{
+      width: auto;
+      margin: 0;
+      padding: 8px 10px;
+      border-color: var(--accent);
+      color: var(--text);
+      background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+      font-size: .78rem;
+      font-weight: 720;
+    }}
+    .offline-download-status {{
+      min-width: 0;
+      color: var(--muted);
+      font-size: .72rem;
+      overflow-wrap: anywhere;
     }}
     .mini-player {{
       left: 50%;
@@ -1399,6 +1483,26 @@ class MusicServer(BaseHTTPRequestHandler):
     .recommendation-copy {{ padding: 11px 12px 13px; }}
     .recommendation-title {{ white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 780; }}
     .recommendation-meta {{ margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted); font-size: .76rem; }}
+    [data-panel="search"] {{ padding: 22px 0 110px; }}
+    .search-header {{ padding-bottom: 16px; border-bottom: 1px solid var(--line); }}
+    .search-header h2 {{ margin: 0; font-size: clamp(1.55rem, 3vw, 2.35rem); }}
+    .search-header p {{ margin: 7px 0 0; color: var(--muted); }}
+    .youtube-search-form {{ display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; margin: 18px 0; }}
+    .youtube-search-form button {{ margin: 0; border-color: var(--accent); background: var(--accent); color: #07120d; font-weight: 800; }}
+    .playlist-search-status {{ min-height: 1.45em; color: var(--muted); font-size: .82rem; }}
+    .playlist-search-status.error {{ color: var(--warm); }}
+    .playlist-stage {{ margin: 18px 0 0; }}
+    .playlist-stage[hidden] {{ display: none; }}
+    .playlist-frame {{ width: 100%; aspect-ratio: 16 / 9; min-height: 240px; overflow: hidden; border-radius: 8px; background: #000; }}
+    .playlist-frame > div, .playlist-frame iframe {{ width: 100%; height: 100%; border: 0; display: block; }}
+    .playlist-now {{ margin-top: 9px; color: var(--muted); font-size: .82rem; }}
+    .playlist-grid {{ display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; padding-top: 18px; }}
+    .playlist-card {{ display: grid; grid-template-columns: 46px minmax(0, 1fr) auto; gap: 10px; align-items: start; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }}
+    .playlist-thumbnail {{ width: 46px; height: 46px; border-radius: 6px; object-fit: cover; background: var(--line); }}
+    .playlist-card-title {{ display: block; width: auto; padding: 0; border: 0; border-radius: 0; color: var(--text); font-weight: 780; text-align: left; white-space: normal; overflow-wrap: anywhere; }}
+    .playlist-card-meta {{ margin-top: 5px; color: var(--muted); font-size: .76rem; }}
+    .playlist-like {{ width: 38px; height: 38px; margin: 0; padding: 0; border-color: var(--line); color: var(--muted); font-size: 1.05rem; }}
+    .playlist-like[aria-pressed="true"] {{ border-color: #d94668; color: #f05b7a; background: color-mix(in srgb, #d94668 12%, var(--surface)); }}
     .tab-notice {{
       display: inline-block;
       width: 6px;
@@ -1428,7 +1532,7 @@ class MusicServer(BaseHTTPRequestHandler):
       }}
       body[data-active-tab="player"] main {{ padding-bottom: max(8px, env(safe-area-inset-bottom)); }}
       .brand-subtitle {{ display: none; }}
-      .tabs {{ width: 100%; grid-template-columns: repeat(4, 1fr); }}
+      .tabs {{ width: 100%; grid-template-columns: repeat(5, 1fr); }}
       .tab {{ min-width: 0; width: 100%; padding: 6px 8px; }}
       .player-card {{
         grid-template-columns: 1fr;
@@ -1451,6 +1555,9 @@ class MusicServer(BaseHTTPRequestHandler):
       .eyebrow {{ margin-bottom: 5px; font-size: .62rem; }}
       .player-title {{ margin-bottom: 4px; font-size: 1.38rem; line-height: 1.1; }}
       .player-artist {{ font-size: .82rem; }}
+      .player-genres {{ justify-content: center; margin-top: 9px; }}
+      .player-genre {{ padding: 5px 9px; font-size: .68rem; }}
+      .genre-favorite {{ width: 29px; }}
       .progress {{ gap: 2px 8px; }}
       .player-controls {{ justify-content: center; gap: 8px; }}
       .icon-button {{ width: 40px; height: 40px; }}
@@ -1460,6 +1567,8 @@ class MusicServer(BaseHTTPRequestHandler):
         gap: 14px;
         padding-top: 10px;
       }}
+      .offline-download {{ align-items: flex-start; flex-direction: column; gap: 6px; }}
+      .offline-download button {{ width: 100%; }}
       .setting-label, .setting-value {{ font-size: .66rem; }}
       .crossfade-control select {{ min-height: 32px; padding-top: 5px; padding-bottom: 5px; }}
       [data-panel="playlist"] > form {{
@@ -1489,6 +1598,9 @@ class MusicServer(BaseHTTPRequestHandler):
       .recommendation-status {{ display: block; margin-top: 8px; white-space: normal; }}
       .youtube-stage {{ grid-template-columns: 1fr; gap: 14px; }}
       .recommendation-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }}
+      [data-panel="search"] {{ padding-top: 14px; }}
+      .youtube-search-form {{ grid-template-columns: 1fr; }}
+      .playlist-grid {{ grid-template-columns: 1fr; gap: 10px; }}
       .recommendation-copy {{ padding: 9px 10px 11px; }}
       .mini-player {{ grid-template-columns: 42px minmax(0, 1fr) auto auto; }}
       .mini-cover-shell {{ width: 42px; height: 42px; }}
@@ -1527,6 +1639,7 @@ class MusicServer(BaseHTTPRequestHandler):
       <button class="{tab_class("playlist")}" type="button" data-tab="playlist">Playlist</button>
       <button class="{tab_class("friends")}" type="button" data-tab="friends">Freunde</button>
       <button class="{tab_class("discover")}" type="button" data-tab="discover">Neu<span class="tab-notice" id="recommendation-notice" hidden></span></button>
+      <button class="{tab_class("search")}" type="button" data-tab="search">Suchen</button>
     </nav>
     <section class="{panel_class("player")}" data-panel="player">
       <div class="player-card">
@@ -1540,6 +1653,7 @@ class MusicServer(BaseHTTPRequestHandler):
             <div class="eyebrow">Now playing</div>
             <h2 class="player-title" id="player-title">Kein Song ausgewählt</h2>
             <div class="player-artist" id="player-artist">Wähle einen Song aus der Playlist</div>
+            <div class="player-genres" id="player-genres" aria-label="Genres des aktuellen Songs" hidden></div>
           </div>
           <div class="progress">
             <input id="progress" type="range" min="0" max="1000" value="0" aria-label="Position">
@@ -1568,6 +1682,10 @@ class MusicServer(BaseHTTPRequestHandler):
                 <option value="9">9 Sek.</option>
               </select>
             </label>
+            <div class="offline-download">
+              <button type="button" id="offline-download" aria-describedby="offline-download-status">Alle Songs laden</button>
+              <span class="offline-download-status" id="offline-download-status">Für Offline-Dateien auf diesem Gerät.</span>
+            </div>
           </div>
         </div>
       </div>
@@ -1604,6 +1722,23 @@ class MusicServer(BaseHTTPRequestHandler):
         </div>
       </div>
       <div class="recommendation-grid" id="recommendation-grid"></div>
+    </section>
+    <section class="{panel_class("search")}" data-panel="search">
+      <header class="search-header">
+        <div class="friend-kicker">YouTube</div>
+        <h2>Playlists suchen</h2>
+        <p>Finde öffentliche YouTube-Playlists, öffne sie bei YouTube und markiere deine Favoriten auf diesem Gerät.</p>
+      </header>
+      <form class="youtube-search-form" id="youtube-search-form">
+        <input id="youtube-search-input" type="search" maxlength="120" placeholder="z. B. happy motivation" autocomplete="off" required>
+        <button type="submit" id="youtube-search-submit">Playlists suchen</button>
+      </form>
+      <div class="playlist-search-status" id="playlist-search-status" aria-live="polite">Suche nach Stimmung, Genre oder Thema.</div>
+      <div class="playlist-stage" id="playlist-stage" hidden>
+        <div class="playlist-frame" aria-label="YouTube-Playlist"><div id="playlist-frame"></div></div>
+        <div class="playlist-now" id="playlist-now"></div>
+      </div>
+      <div class="playlist-grid" id="playlist-grid"></div>
     </section>
   </main>
   <div class="mini-player" id="mini-player">
@@ -1657,13 +1792,28 @@ class MusicServer(BaseHTTPRequestHandler):
       let recommendationLoading = false;
       let youtubeApiPromise = null;
       let youtubePlayer = null;
+      let playlistPlayer = null;
+      let playlistSkippedUnavailable = 0;
       let youtubeActive = false;
       let youtubeSuggestion = null;
       let recommendationItems = [];
+      const favoriteGenresStorageKey = "music-player-favorite-genres";
+      const favoritePlaylistsStorageKey = "music-youtube-favorite-playlists";
+      let favoriteGenres = new Set();
+      let favoritePlaylists = new Set();
+      try {{
+        const savedGenres = JSON.parse(window.localStorage.getItem(favoriteGenresStorageKey) || "[]");
+        if (Array.isArray(savedGenres)) favoriteGenres = new Set(savedGenres.filter((genre) => typeof genre === "string"));
+      }} catch (_) {{}}
+      try {{
+        const savedPlaylists = JSON.parse(window.localStorage.getItem(favoritePlaylistsStorageKey) || "[]");
+        if (Array.isArray(savedPlaylists)) favoritePlaylists = new Set(savedPlaylists.filter((id) => typeof id === "string"));
+      }} catch (_) {{}}
       const inlineAudios = Array.from(document.querySelectorAll("[data-inline-audio]"));
       const els = {{
         title: document.getElementById("player-title"),
         artist: document.getElementById("player-artist"),
+        genres: document.getElementById("player-genres"),
         miniTitle: document.getElementById("mini-title"),
         miniArtist: document.getElementById("mini-artist"),
         miniCover: document.getElementById("mini-cover"),
@@ -1683,6 +1833,8 @@ class MusicServer(BaseHTTPRequestHandler):
         volumeValue: document.getElementById("volume-value"),
         crossfade: document.getElementById("crossfade"),
         download: document.getElementById("player-download"),
+        offlineDownload: document.getElementById("offline-download"),
+        offlineDownloadStatus: document.getElementById("offline-download-status"),
         recommendationNotice: document.getElementById("recommendation-notice"),
         recommendationStatus: document.getElementById("recommendation-status"),
         recommendationGrid: document.getElementById("recommendation-grid"),
@@ -1690,6 +1842,14 @@ class MusicServer(BaseHTTPRequestHandler):
         youtubeTitle: document.getElementById("youtube-title"),
         youtubeArtist: document.getElementById("youtube-artist"),
         youtubeOpen: document.getElementById("youtube-open"),
+        playlistSearchForm: document.getElementById("youtube-search-form"),
+        playlistSearchInput: document.getElementById("youtube-search-input"),
+        playlistSearchSubmit: document.getElementById("youtube-search-submit"),
+        playlistSearchStatus: document.getElementById("playlist-search-status"),
+        playlistGrid: document.getElementById("playlist-grid"),
+        playlistStage: document.getElementById("playlist-stage"),
+        playlistFrame: document.getElementById("playlist-frame"),
+        playlistNow: document.getElementById("playlist-now"),
       }};
       const chat = {{
         panel: document.getElementById("codex-chat"),
@@ -1832,6 +1992,30 @@ class MusicServer(BaseHTTPRequestHandler):
         if (persist) persistPlayerSettings();
       }}
 
+      function updateOfflineDownloadControl(message = "") {{
+        if (!tracks.length) {{
+          els.offlineDownload.disabled = true;
+          els.offlineDownloadStatus.textContent = "Keine lokalen Songs zum Herunterladen.";
+          return;
+        }}
+        els.offlineDownload.textContent = "Alle Songs laden";
+        els.offlineDownloadStatus.textContent = message || "Alle " + tracks.length + " lokalen Songs auf einmal laden. Safari fragt eventuell nach dem Speicherort.";
+      }}
+
+      function downloadAllOfflineSongs() {{
+        if (!tracks.length) return;
+        tracks.forEach((track) => {{
+          const link = document.createElement("a");
+          link.href = track.download;
+          link.download = "";
+          link.hidden = true;
+          document.body.append(link);
+          link.click();
+          link.remove();
+        }});
+        updateOfflineDownloadControl("Alle " + tracks.length + " Downloads wurden gestartet. Speichere die Dateien in Safari unter „Downloads“.");
+      }}
+
       function pauseInlineAudios(except = null) {{
         inlineAudios.forEach((element) => {{
           if (except && element === except) return;
@@ -1858,7 +2042,9 @@ class MusicServer(BaseHTTPRequestHandler):
         const candidates = tracks
           .map((track, index) => (track.src === lastTrackSource ? -1 : index))
           .filter((index) => index >= 0);
-        const pool = candidates.length ? candidates : tracks.map((_, index) => index);
+        const available = candidates.length ? candidates : tracks.map((_, index) => index);
+        const withGenres = available.filter((index) => (tracks[index].genres || []).length);
+        const pool = withGenres.length ? withGenres : available;
         return pool[Math.floor(Math.random() * pool.length)];
       }}
 
@@ -1867,6 +2053,36 @@ class MusicServer(BaseHTTPRequestHandler):
         if (!track) return;
         els.title.textContent = track.title;
         els.artist.textContent = [track.artist, track.album].filter(Boolean).join(" · ");
+        els.genres.replaceChildren();
+        (track.genres || []).forEach((genre) => {{
+          const group = document.createElement("span");
+          group.className = "player-genre-group";
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "player-genre";
+          button.textContent = genre;
+          button.setAttribute("aria-label", genre + " abspielen");
+          button.addEventListener("click", () => playGenre(genre));
+          const favorite = document.createElement("button");
+          favorite.type = "button";
+          favorite.className = "genre-favorite";
+          const isFavorite = favoriteGenres.has(genre);
+          favorite.textContent = isFavorite ? "♥" : "♡";
+          favorite.setAttribute("aria-pressed", String(isFavorite));
+          favorite.setAttribute("aria-label", genre + (isFavorite ? " nicht mehr favorisieren" : " favorisieren"));
+          favorite.addEventListener("click", () => {{
+            if (favoriteGenres.has(genre)) favoriteGenres.delete(genre);
+            else favoriteGenres.add(genre);
+            try {{ window.localStorage.setItem(favoriteGenresStorageKey, JSON.stringify([...favoriteGenres])); }} catch (_) {{}}
+            const nowFavorite = favoriteGenres.has(genre);
+            favorite.textContent = nowFavorite ? "♥" : "♡";
+            favorite.setAttribute("aria-pressed", String(nowFavorite));
+            favorite.setAttribute("aria-label", genre + (nowFavorite ? " nicht mehr favorisieren" : " favorisieren"));
+          }});
+          group.append(button, favorite);
+          els.genres.append(group);
+        }});
+        els.genres.hidden = !els.genres.childElementCount;
         els.miniTitle.textContent = track.title;
         els.miniArtist.textContent = track.artist || "Player";
         const initial = (track.title || "S").slice(0, 1).toUpperCase();
@@ -2152,10 +2368,12 @@ class MusicServer(BaseHTTPRequestHandler):
                 audioDecks.forEach((deck) => deck.pause());
                 youtubeActive = true;
                 updateYoutubeMiniPlayer(true);
-              }} else if (
-                event.data === YTApi.PlayerState.PAUSED ||
-                event.data === YTApi.PlayerState.ENDED
-              ) {{
+              }} else if (event.data === YTApi.PlayerState.ENDED) {{
+                updateYoutubeMiniPlayer(false);
+                // Ein "Neu"-Titel bleibt im YouTube-Mix: Nach dem Ende wird
+                // direkt der nächste passende Vorschlag geladen.
+                next(true, false);
+              }} else if (event.data === YTApi.PlayerState.PAUSED) {{
                 updateYoutubeMiniPlayer(false);
               }}
             }},
@@ -2224,8 +2442,119 @@ class MusicServer(BaseHTTPRequestHandler):
         }}
       }}
 
+      function renderPlaylistSearch(playlists) {{
+        els.playlistGrid.replaceChildren();
+        playlists.forEach((playlist) => {{
+          const card = document.createElement("article");
+          card.className = "playlist-card";
+          if (playlist.thumbnail) {{
+            const thumbnail = document.createElement("img");
+            thumbnail.className = "playlist-thumbnail";
+            thumbnail.src = playlist.thumbnail;
+            thumbnail.alt = "";
+            thumbnail.loading = "lazy";
+            card.append(thumbnail);
+          }} else {{
+            const thumbnail = document.createElement("div");
+            thumbnail.className = "playlist-thumbnail";
+            thumbnail.setAttribute("aria-hidden", "true");
+            card.append(thumbnail);
+          }}
+          const copy = document.createElement("div");
+          const title = document.createElement("button");
+          title.type = "button";
+          title.className = "playlist-card-title";
+          title.textContent = playlist.title;
+          title.addEventListener("click", () => playPlaylist(playlist));
+          const meta = document.createElement("div");
+          meta.className = "playlist-card-meta";
+          meta.textContent = [playlist.channel, playlist.count ? playlist.count + " Videos" : "Playlist"].filter(Boolean).join(" · ");
+          copy.append(title, meta);
+          const like = document.createElement("button");
+          like.type = "button";
+          like.className = "playlist-like";
+          const renderLike = () => {{
+            const saved = favoritePlaylists.has(playlist.id);
+            like.textContent = saved ? "♥" : "♡";
+            like.setAttribute("aria-pressed", String(saved));
+            like.setAttribute("aria-label", saved ? "Playlist nicht mehr liken" : "Playlist liken");
+          }};
+          renderLike();
+          like.addEventListener("click", () => {{
+            if (favoritePlaylists.has(playlist.id)) favoritePlaylists.delete(playlist.id);
+            else favoritePlaylists.add(playlist.id);
+            try {{ window.localStorage.setItem(favoritePlaylistsStorageKey, JSON.stringify([...favoritePlaylists])); }} catch (_) {{}}
+            renderLike();
+          }});
+          card.append(copy, like);
+          els.playlistGrid.append(card);
+        }});
+      }}
+
+      async function playPlaylist(playlist) {{
+        els.playlistNow.textContent = "Spielt: " + playlist.title + (playlist.channel ? " · " + playlist.channel : "");
+        els.playlistStage.hidden = false;
+        els.playlistStage.scrollIntoView({{ behavior: "smooth", block: "nearest" }});
+        playlistSkippedUnavailable = 0;
+        const YTApi = await youtubeApi();
+        const playerVars = {{ autoplay: 1, playsinline: 1, rel: 0, listType: "playlist", list: playlist.id }};
+        if (playlistPlayer?.loadPlaylist) {{
+          playlistPlayer.loadPlaylist({{ list: playlist.id, listType: "playlist", index: 0, startSeconds: 0 }});
+          playlistPlayer.playVideo();
+          return;
+        }}
+        playlistPlayer = new YTApi.Player("playlist-frame", {{
+          playerVars,
+          events: {{
+            onStateChange: (event) => {{
+              if (event.data === YTApi.PlayerState.PLAYING) playlistSkippedUnavailable = 0;
+            }},
+            onError: () => {{
+              playlistSkippedUnavailable += 1;
+              if (playlistSkippedUnavailable > 10) {{
+                els.playlistNow.textContent = "Diese Playlist enthält keine abspielbaren Videos.";
+                return;
+              }}
+              els.playlistNow.textContent = "Nicht verfügbares Video wird übersprungen …";
+              window.setTimeout(() => playlistPlayer?.nextVideo(), 250);
+            }},
+          }},
+        }});
+      }}
+
+      async function searchYoutubePlaylists(query) {{
+        els.playlistSearchSubmit.disabled = true;
+        els.playlistSearchStatus.classList.remove("error");
+        els.playlistSearchStatus.textContent = "YouTube-Playlists werden gesucht …";
+        try {{
+          const response = await fetch("/api/youtube/playlists?" + new URLSearchParams({{ q: query }}), {{ cache: "no-store" }});
+          const payload = await response.json();
+          if (!response.ok) throw new Error(payload.error || "Die Playlist-Suche ist fehlgeschlagen.");
+          const playlists = payload.playlists || [];
+          renderPlaylistSearch(playlists);
+          els.playlistSearchStatus.textContent = playlists.length ? playlists.length + " Playlists gefunden" : "Keine passenden Playlists gefunden.";
+        }} catch (error) {{
+          els.playlistGrid.replaceChildren();
+          els.playlistSearchStatus.classList.add("error");
+          els.playlistSearchStatus.textContent = error.message;
+        }} finally {{
+          els.playlistSearchSubmit.disabled = false;
+        }}
+      }}
+
       document.querySelectorAll(".tab").forEach((tab) => {{
         tab.addEventListener("click", () => setTab(tab.dataset.tab));
+      }});
+      els.playlistSearchForm.addEventListener("submit", (event) => {{
+        event.preventDefault();
+        const query = els.playlistSearchInput.value.trim();
+        if (query) searchYoutubePlaylists(query);
+      }});
+      els.playlistSearchInput.addEventListener("keydown", (event) => {{
+        if (event.key !== "Enter" || event.isComposing) return;
+        event.preventDefault();
+        const query = els.playlistSearchInput.value.trim();
+        if (query && !els.playlistSearchSubmit.disabled) searchYoutubePlaylists(query);
       }});
       document.querySelectorAll("[data-play-index]").forEach((button) => {{
         button.addEventListener("click", () => {{
@@ -2283,6 +2612,7 @@ class MusicServer(BaseHTTPRequestHandler):
       els.volume.addEventListener("input", () => {{
         applyVolume(Number(els.volume.value) / 100);
       }});
+      els.offlineDownload.addEventListener("click", downloadAllOfflineSongs);
       els.crossfade.addEventListener("change", () => {{
         crossfadeSeconds = Number(els.crossfade.value) || 0;
         persistPlayerSettings();
@@ -2339,7 +2669,7 @@ class MusicServer(BaseHTTPRequestHandler):
       document.addEventListener("touchend", (event) => {{
         const delta = event.changedTouches[0].clientX - touchStart;
         if (Math.abs(delta) < 70) return;
-        const order = ["player", "playlist", "friends", "discover"];
+        const order = ["player", "playlist", "friends", "discover", "search"];
         const active = document.querySelector(".tab.active")?.dataset.tab || "player";
         const index = order.indexOf(active);
         if (delta < 0 && index < order.length - 1) setTab(order[index + 1]);
@@ -2363,6 +2693,7 @@ class MusicServer(BaseHTTPRequestHandler):
       }}
       if (tracks.length) loadTrack(queueIndexFor(current), false);
       updateButtons();
+      updateOfflineDownloadControl();
       loadChatHistory();
     }})();
   </script>
@@ -3278,6 +3609,53 @@ class Server(ThreadingHTTPServer):
             temporary.chmod(0o600)
             temporary.replace(cache_path)
             return suggestions
+
+    def youtube_playlists_for(self, query: str) -> list[dict[str, object]]:
+        if not Path(self.ytdlp_bin).is_file():
+            raise RuntimeError("Die YouTube-Suche ist auf dem Server nicht verfügbar.")
+        search_url = "https://www.youtube.com/results?" + urlencode({
+            "search_query": query,
+            "sp": "EgIQAw==",  # YouTube-Suchfilter: Playlists
+        })
+        search = self.run_ytdlp_json(search_url, 24)
+        playlists: list[dict[str, object]] = []
+        seen: set[str] = set()
+        for item in search.get("entries", []):
+            if not isinstance(item, dict):
+                continue
+            playlist_id = str(item.get("id") or "").strip()
+            title = str(item.get("title") or "").strip()
+            if (
+                not playlist_id
+                or not title
+                or playlist_id in seen
+                or not re.fullmatch(r"[A-Za-z0-9_-]{10,100}", playlist_id)
+            ):
+                continue
+            item_type = str(item.get("_type") or "").lower()
+            if item_type and item_type not in {"playlist", "url"} and not item.get("playlist_count"):
+                continue
+            seen.add(playlist_id)
+            count = item.get("playlist_count") or item.get("n_entries") or 0
+            thumbnail = str(item.get("thumbnail") or "").strip()
+            if not thumbnail:
+                thumbnails = item.get("thumbnails")
+                if isinstance(thumbnails, list):
+                    for candidate in reversed(thumbnails):
+                        if isinstance(candidate, dict) and str(candidate.get("url") or "").strip():
+                            thumbnail = str(candidate["url"]).strip()
+                            break
+            playlists.append({
+                "id": playlist_id,
+                "title": title,
+                "channel": str(item.get("channel") or item.get("uploader") or "").strip(),
+                "count": int(count) if isinstance(count, (int, float)) else 0,
+                "thumbnail": thumbnail if thumbnail.startswith(("https://i.ytimg.com/", "https://yt3.ggpht.com/")) else "",
+                "url": f"https://www.youtube.com/playlist?list={quote(playlist_id)}",
+            })
+            if len(playlists) >= 12:
+                break
+        return playlists
 
     def run_ytdlp_json(self, url: str, playlist_end: int) -> dict[str, object]:
         command = [
